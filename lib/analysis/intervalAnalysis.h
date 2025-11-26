@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <map>
 #include <queue>
+#include <unordered_map>
 #include <vector>
 
 namespace fdlang::analysis {
@@ -30,6 +31,7 @@ public:
 
 private:
     std::map<IR::CheckIntervalInst *, ResultType> results;
+    std::unordered_map<size_t, IR::Inst *> label2Inst;
 
     // label -> states
     // label is regarded as the index of inst in insts
@@ -38,7 +40,11 @@ private:
     std::queue<size_t> worklist;
 
 public:
-    IntervalAnalysis(const IR::Functions &funcs) : DataflowAnalysis(funcs) {}
+    IntervalAnalysis(const IR::Functions &funcs) : DataflowAnalysis(funcs) {
+        for (auto inst : insts) {
+            label2Inst[inst->getLabel()] = inst;
+        }
+    }
 
     // DO NOT MODIFY THIS FUNCTION
     void dumpResult(std::ostream &out) override {
