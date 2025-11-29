@@ -1,7 +1,9 @@
 #include "zoneDomain.h"
 
 #include <algorithm>
+#include <cassert>
 #include <cstddef>
+#include <iostream>
 #include <vector>
 
 using namespace fdlang::analysis;
@@ -38,6 +40,10 @@ ZoneDomain::ZoneDomain(const std::vector<std::string> &vars,
 }
 
 void ZoneDomain::dump(std::ostream &out) const {
+    if (n <= 1 || _dbm.size() != n) {
+        out << "; Empty ZoneDomain (n<=1)" << std::endl;
+        return;
+    }
     if (isEmpty()) {
         out << "; Unreachable" << std::endl;
         return;
@@ -71,10 +77,30 @@ void ZoneDomain::dump(std::ostream &out) const {
  * @brief Get the new zone which is the normal form of `*this'
  */
 ZoneDomain ZoneDomain::normalize() const {
-    ZoneDomain ret = *this;
-
-    // todo: Floyd (about 4 lines)
-
+    ZoneDomain ret;
+    ret.n = n;
+    ret._dbm = _dbm;
+    ret._id_to_var = _id_to_var;
+    ret._var_to_id = _var_to_id;
+    if (n <= 1) {
+        ret._dbm.clear();
+        return ret;
+    }
+    assert(n > 0 && "ZoneDomain::normalize: n must be > 0");
+    // Floyd-Warshall algorithm for all-pairs shortest paths
+    for (size_t k = 0; k < n; k++) {
+        for (size_t i = 0; i < n; i++) {
+            for (size_t j = 0; j < n; j++) {
+                ret._dbm[i][j] =
+                    std::min(ret._dbm[i][j], ret._dbm[i][k] + ret._dbm[k][j]);
+            }
+        }
+    }
+    if (ret._dbm.size() != n) {
+        ret._dbm.clear();
+        for (size_t i = 0; i < n; i++)
+            ret._dbm.emplace_back(n, INF);
+    }
     return ret;
 }
 
@@ -82,9 +108,13 @@ ZoneDomain ZoneDomain::normalize() const {
  * @brief Test if `*this' is bottom
  */
 bool ZoneDomain::isEmpty() const {
-
-    // todo: Determine if there are negative loops (about 4 lines)
-
+    if (n <= 1 || _dbm.size() != n)
+        return true;
+    ZoneDomain normalized = this->normalize();
+    for (size_t i = 0; i < n; i++) {
+        if (normalized._dbm[i][i] < 0)
+            return true;
+    }
     return false;
 }
 
@@ -92,7 +122,8 @@ bool ZoneDomain::isEmpty() const {
  * @brief Test if `*this' is less or equal than `o' in partial order <=
  */
 bool ZoneDomain::leq(const ZoneDomain &o) const {
-    // Assume `*this' is already normalized
+    if (n <= 1 || _dbm.size() != n || o.n <= 1 || o._dbm.size() != o.n)
+        return true;
     for (size_t i = 0; i < n; i++)
         for (size_t j = 0; j < n; j++)
             if (this->_dbm[i][j] > o._dbm[i][j])
@@ -104,7 +135,8 @@ bool ZoneDomain::leq(const ZoneDomain &o) const {
  * @brief Test if `*this' is equal to `o'
  */
 bool ZoneDomain::eq(const ZoneDomain &o) const {
-    // Assume `*this' is already normalized
+    if (n <= 1 || _dbm.size() != n || o.n <= 1 || o._dbm.size() != o.n)
+        return true;
     for (size_t i = 0; i < n; i++)
         for (size_t j = 0; j < n; j++)
             if (this->_dbm[i][j] != o._dbm[i][j])
@@ -116,7 +148,16 @@ bool ZoneDomain::eq(const ZoneDomain &o) const {
  * @brief Get the projection of `*this' on the variable `x'
  */
 IntervalDomain ZoneDomain::projection(const std::string &x) const {
+    if (n <= 1 || _dbm.size() != n) {
+        return IntervalDomain(0, 0);
+    }
+    assert(n > 0 && "ZoneDomain::projection: n must be > 0");
     size_t id = getID(x);
+    if (_var_to_id.find(x) == _var_to_id.end() || id >= n) {
+        std::cerr << "[projection] Variable not found or id out of range: " << x
+                  << " id=" << id << " n=" << n << std::endl;
+        assert(false);
+    }
     return IntervalDomain(-_dbm[id][0], _dbm[0][id]);
 }
 
@@ -124,12 +165,22 @@ IntervalDomain ZoneDomain::projection(const std::string &x) const {
  * @brief Get the new zone which is the least upper bound of `*this' and `o'
  */
 ZoneDomain ZoneDomain::lub(const ZoneDomain &o) const {
-    ZoneDomain ret = *this;
-
+    if (n <= 1 || o.n <= 1) {
+        ZoneDomain ret;
+        ret.n = n;
+        ret._dbm.clear();
+        ret._id_to_var = _id_to_var;
+        ret._var_to_id = _var_to_id;
+        return ret;
+    }
+    ZoneDomain ret;
+    ret.n = n;
+    ret._dbm = _dbm;
+    ret._id_to_var = _id_to_var;
+    ret._var_to_id = _var_to_id;
     for (size_t i = 0; i < n; i++)
         for (size_t j = 0; j < n; j++)
-            ret._dbm[i][j] = std::max(this->_dbm[i][j], o._dbm[i][j]);
-
+            ret._dbm[i][j] = std::max(_dbm[i][j], o._dbm[i][j]);
     ret = ret.normalize();
     return ret;
 }
@@ -138,14 +189,44 @@ ZoneDomain ZoneDomain::lub(const ZoneDomain &o) const {
  * @brief Get the new zone which forgets the variable `x'
  */
 ZoneDomain ZoneDomain::forget(const std::string &x) const {
-    ZoneDomain ret = *this;
+    if (n <= 1) {
+        ZoneDomain ret;
+        ret.n = n;
+        ret._dbm.clear();
+        ret._id_to_var = _id_to_var;
+        ret._var_to_id = _var_to_id;
+        return ret;
+    }
+    if (_var_to_id.find(x) == _var_to_id.end()) {
+        std::cerr << "[ZoneDomain::forget] Variable not found: " << x
+                  << std::endl;
+        ZoneDomain ret;
+        ret.n = n;
+        ret._dbm = _dbm;
+        ret._id_to_var = _id_to_var;
+        ret._var_to_id = _var_to_id;
+        return ret;
+    }
     size_t k = getID(x);
-
+    if (k >= n) {
+        std::cerr << "[ZoneDomain::forget] k out of range: " << x << " k=" << k
+                  << " n=" << n << std::endl;
+        ZoneDomain ret;
+        ret.n = n;
+        ret._dbm = _dbm;
+        ret._id_to_var = _id_to_var;
+        ret._var_to_id = _var_to_id;
+        return ret;
+    }
+    ZoneDomain ret;
+    ret.n = n;
+    ret._dbm = _dbm;
+    ret._id_to_var = _id_to_var;
+    ret._var_to_id = _var_to_id;
     for (size_t i = 0; i < n; i++)
         for (size_t j = 0; j < n; j++) {
             if (i != k && j != k)
-                ret._dbm[i][j] = std::min(this->_dbm[i][j],
-                                          this->_dbm[i][k] + this->_dbm[k][j]);
+                ret._dbm[i][j] = std::min(_dbm[i][j], _dbm[i][k] + _dbm[k][j]);
             else if (i == j && j == k)
                 ret._dbm[i][j] = 0;
             else
@@ -153,7 +234,6 @@ ZoneDomain ZoneDomain::forget(const std::string &x) const {
         }
     ret._dbm[k][0] = 0;
     ret._dbm[0][k] = 255;
-
     ret = ret.normalize();
     return ret;
 }
@@ -228,10 +308,35 @@ ZoneDomain ZoneDomain::filterInst(const IR::IfInst *inst, bool branch) const {
  */
 ZoneDomain ZoneDomain::filter(const std::string &x, const std::string &y,
                               long long c) const {
-    ZoneDomain ret = *this;
-
-    // todo: add constraint `x - y <= c' (about 3 lines)
-
+    if (n <= 1) {
+        ZoneDomain ret;
+        ret.n = n;
+        ret._dbm.clear();
+        ret._id_to_var = _id_to_var;
+        ret._var_to_id = _var_to_id;
+        return ret;
+    }
+    assert(n > 0 && "ZoneDomain::filter: n must be > 0");
+    size_t i = x.empty() ? 0 : getID(x);
+    size_t j = y.empty() ? 0 : getID(y);
+    if ((!x.empty() && (_var_to_id.find(x) == _var_to_id.end() || i >= n)) ||
+        (!y.empty() && (_var_to_id.find(y) == _var_to_id.end() || j >= n))) {
+        std::cerr << "[filter] Variable not found or index out of range: x="
+                  << x << " i=" << i << " y=" << y << " j=" << j << " n=" << n
+                  << std::endl;
+        ZoneDomain ret;
+        ret.n = n;
+        ret._dbm = _dbm;
+        ret._id_to_var = _id_to_var;
+        ret._var_to_id = _var_to_id;
+        return ret;
+    }
+    ZoneDomain ret;
+    ret.n = n;
+    ret._dbm = _dbm;
+    ret._id_to_var = _id_to_var;
+    ret._var_to_id = _var_to_id;
+    ret._dbm[i][j] = std::min(ret._dbm[i][j], c);
     return ret;
 }
 
@@ -239,8 +344,14 @@ ZoneDomain ZoneDomain::filter(const std::string &x, const std::string &y,
  * @brief Get the new zone after excuting assigment/add/sub `inst'
  */
 ZoneDomain ZoneDomain::assignInst(const IR::Inst *inst) const {
+    if (n <= 1)
+        return *this;
     std::string x;
     ZoneDomain ret;
+    ret.n = n;
+    ret._dbm = _dbm;
+    ret._id_to_var = _id_to_var;
+    ret._var_to_id = _var_to_id;
 
     if (const IR::AddInst *addInst = dynamic_cast<const IR::AddInst *>(inst)) {
         x = addInst->getOperand(0)->getAsVariable();
@@ -349,16 +460,29 @@ ZoneDomain ZoneDomain::assignInst(const IR::Inst *inst) const {
  * @brief Get the new zone after excuting `x = x + c'
  */
 ZoneDomain ZoneDomain::assign_case1(const std::string &x, long long c) const {
+    if (n <= 1)
+        return *this;
+    if (_var_to_id.find(x) == _var_to_id.end()) {
+        std::cerr << "[assign_case1] Variable not found: " << x << std::endl;
+        return *this;
+    }
     size_t i0 = getID(x);
-    ZoneDomain ret = *this;
-
+    if (i0 >= n) {
+        std::cerr << "[assign_case1] i0 out of range: " << x << " i0=" << i0
+                  << " n=" << n << std::endl;
+        return *this;
+    }
+    ZoneDomain ret;
+    ret.n = n;
+    ret._dbm = _dbm;
+    ret._id_to_var = _id_to_var;
+    ret._var_to_id = _var_to_id;
     long long pc = c;
     pc = std::min(pc, 255ll - ret._dbm[0][i0]);
     pc = std::max(pc, -ret._dbm[0][i0]);
     long long mc = c;
     mc = std::min(mc, 255ll + ret._dbm[i0][0]);
     mc = std::max(mc, ret._dbm[i0][0]);
-
     for (size_t i = 0; i < n; i++)
         for (size_t j = 0; j < n; j++) {
             if (i == i0 && j != i0) {
@@ -368,7 +492,6 @@ ZoneDomain ZoneDomain::assign_case1(const std::string &x, long long c) const {
                 ret._dbm[i][j] += pc;
             }
         }
-
     return ret;
 }
 
@@ -379,11 +502,46 @@ ZoneDomain ZoneDomain::assign_case1(const std::string &x, long long c) const {
  */
 ZoneDomain ZoneDomain::assign_case2(const std::string &x, const std::string &y,
                                     long long c) const {
-    ZoneDomain ret;
-
-    // todo: (about 1 line)
-
-    return ret;
+    if (n <= 1)
+        return *this;
+    if (_var_to_id.find(x) == _var_to_id.end()) {
+        std::cerr << "[assign_case2] Variable not found: " << x << std::endl;
+        return *this;
+    }
+    size_t i0 = getID(x);
+    if (i0 >= n) {
+        std::cerr << "[assign_case2] i0 out of range: " << x << " i0=" << i0
+                  << " n=" << n << std::endl;
+        return *this;
+    }
+    if (y.empty()) {
+        ZoneDomain ret = this->forget(x);
+        ret.n = n;
+        ret._id_to_var = _id_to_var;
+        ret._var_to_id = _var_to_id;
+        ret._dbm[0][i0] = c;
+        ret._dbm[i0][0] = -c;
+        return ret.normalize();
+    } else {
+        if (_var_to_id.find(y) == _var_to_id.end()) {
+            std::cerr << "[assign_case2] Variable not found: " << y
+                      << std::endl;
+            return *this;
+        }
+        size_t j0 = getID(y);
+        if (j0 >= n) {
+            std::cerr << "[assign_case2] j0 out of range: " << y << " j0=" << j0
+                      << " n=" << n << std::endl;
+            return *this;
+        }
+        ZoneDomain ret = this->forget(x);
+        ret.n = n;
+        ret._id_to_var = _id_to_var;
+        ret._var_to_id = _var_to_id;
+        ret._dbm[i0][j0] = std::min(ret._dbm[i0][j0], c);
+        ret._dbm[j0][i0] = std::min(ret._dbm[j0][i0], -c);
+        return ret.normalize();
+    }
 }
 
 /**
@@ -391,11 +549,25 @@ ZoneDomain ZoneDomain::assign_case2(const std::string &x, const std::string &y,
  */
 ZoneDomain ZoneDomain::assign_case3(const std::string &x, long long l,
                                     long long r) const {
+    if (n <= 1)
+        return *this;
+    if (_var_to_id.find(x) == _var_to_id.end()) {
+        std::cerr << "[assign_case3] Variable not found: " << x << std::endl;
+        return *this;
+    }
+    size_t i0 = getID(x);
+    if (i0 >= n) {
+        std::cerr << "[assign_case3] i0 out of range: " << x << " i0=" << i0
+                  << " n=" << n << std::endl;
+        return *this;
+    }
     l = std::max(l, 0ll);
     r = std::min(r, 255ll);
-    ZoneDomain ret;
-
-    // todo: (about 4 lines)
-
-    return ret;
+    ZoneDomain ret = this->forget(x);
+    ret.n = n;
+    ret._id_to_var = _id_to_var;
+    ret._var_to_id = _var_to_id;
+    ret._dbm[0][i0] = r;
+    ret._dbm[i0][0] = -l;
+    return ret.normalize();
 }
