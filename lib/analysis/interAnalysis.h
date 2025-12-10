@@ -32,15 +32,7 @@ public:
     States params;
     CallContext(IR::Function *caller, IR::CallInst *callsite,
                 States inputStates)
-        : caller(caller), callee(callsite->getCallee()), callsite(callsite) {
-
-        for (int i = 0; i < callsite->getArgs().size(); i++) {
-            auto callsiteArg = callsite->getArgs()[i];
-            auto calleeArg = callee->getArgs()[i];
-            params[calleeArg->getAsVariable()] =
-                inputStates[callsiteArg->getAsVariable()];
-        }
-    }
+        : caller(caller), callee(callsite->getCallee()), callsite(callsite) {}
 };
 
 class InterAnalysis {
